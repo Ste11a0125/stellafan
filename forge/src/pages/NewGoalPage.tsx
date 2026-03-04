@@ -203,7 +203,7 @@ export default function NewGoalPage() {
       const msg =
         err instanceof Error && err.message === 'MISSING_API_KEY'
           ? 'No API key found. Add VITE_ANTHROPIC_API_KEY to your .env.local file.'
-          : 'Failed to generate sub-goals. Please try again.';
+          : `Error: ${err instanceof Error ? err.message : String(err)}`;
       setAiError(msg);
     } finally {
       clearInterval(interval);
