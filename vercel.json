@@ -1,0 +1,6 @@
+{
+  "buildCommand": "cd forge && npm run build",
+  "outputDirectory": "forge/dist",
+  "installCommand": "cd forge && npm install",
+  "framework": null
+}
