@@ -36,7 +36,7 @@ export async function estimateSubGoalTime(
   subGoals: Array<{ id: string; title: string; description?: string }>,
   goal: Goal
 ): Promise<TimeEstimate[]> {
-  const apiKey = (import.meta as unknown as { env: Record<string, string> }).env?.VITE_ANTHROPIC_API_KEY;
+  const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY as string | undefined;
 
   const eligible = subGoals.filter((sg) => {
     // Only estimate subgoals that are active (for draft/store subgoals)
@@ -76,7 +76,7 @@ export async function estimateSubGoalTime(
         'anthropic-dangerous-direct-browser-access': 'true',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 1000,
         system:
           'You are a realistic project time estimator. You estimate how many hours a motivated but non-expert person would need to complete a milestone, working in focused sessions.\n\n' +
@@ -418,7 +418,7 @@ export async function runEndOfDay(date: string): Promise<{ rolledOverHours: numb
 }
 
 async function fetchReplanNote(rolledHours: number, count: number): Promise<string> {
-  const apiKey = (import.meta as unknown as { env: Record<string, string> }).env?.VITE_ANTHROPIC_API_KEY;
+  const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY as string | undefined;
   if (!apiKey) return '';
 
   try {
@@ -431,7 +431,7 @@ async function fetchReplanNote(rolledHours: number, count: number): Promise<stri
         'anthropic-dangerous-direct-browser-access': 'true',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
         max_tokens: 100,
         system: 'You write brief, motivating one-sentence notes about replanning work. Return only the sentence, no quotes.',
         messages: [
