@@ -48,7 +48,8 @@ export default async function handler(req: any, res: any) {
     const content = message.content[0];
     if (content.type !== 'text') throw new Error('Unexpected response type from AI');
 
-    const parsed = JSON.parse(content.text);
+    const jsonText = content.text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+    const parsed = JSON.parse(jsonText);
     if (!parsed.subGoals || !Array.isArray(parsed.subGoals)) {
       throw new Error('Invalid AI response format');
     }
