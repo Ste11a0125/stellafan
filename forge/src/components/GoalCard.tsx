@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { Goal, Priority, SubGoal } from '../store/useStore';
+import type { Goal, Priority } from '../store/useStore';
 import { useStore } from '../store/useStore';
 import { formatDeadline, priorityColor } from '../lib/utils';
 import ProgressBar from './ProgressBar';
