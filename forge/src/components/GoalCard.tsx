@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { Goal, Priority } from '../store/useStore';
 import { useStore } from '../store/useStore';
 import { formatDeadline, priorityColor } from '../lib/utils';
+import { triggerFullReplan } from '../lib/schedulerAgent';
 import ProgressBar from './ProgressBar';
 import SubGoalItem from './SubGoalItem';
 
@@ -73,12 +74,19 @@ export default function GoalCard({ goal }: Props) {
   const handleSave = () => {
     if (!editTitle.trim() || !editDeadline) return;
 
+    const deadlineChanged = editDeadline !== goal.deadline;
+    const priorityChanged = editPriority !== goal.priority;
+
     updateGoal(goal.id, {
       title: editTitle.trim(),
       description: editDescription.trim() || undefined,
       priority: editPriority,
       deadline: editDeadline,
     });
+
+    if (deadlineChanged || priorityChanged) {
+      triggerFullReplan();
+    }
 
     // Sync milestone changes
     const originalIds = new Set(goal.subGoals.map((sg) => sg.id));

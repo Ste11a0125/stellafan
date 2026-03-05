@@ -82,11 +82,46 @@ export type Goal = {
   subGoals: SubGoal[];
   color: GoalColor;
   archived: boolean;
+  scheduleWarning?: 'deadline_at_risk';
 };
+
+// ── Scheduler types ──────────────────────────────────────────────────────────
+
+export type TimeEstimate = {
+  subGoalId: string;
+  estimatedHours: number;
+  confidenceLevel: 'low' | 'medium' | 'high';
+  reasoning: string;
+};
+
+export type ScheduledBlock = {
+  id: string;
+  subGoalId: string;
+  goalId: string;
+  date: string;                  // YYYY-MM-DD
+  allocatedHours: number;
+  completedHours: number;        // default 0
+  status: 'planned' | 'done' | 'partial' | 'rolled-over';
+  rolledOverFrom?: string;
+};
+
+export type DailyPlan = {
+  date: string;                  // YYYY-MM-DD, primary key
+  blocks: ScheduledBlock[];
+  totalPlannedHours: number;
+  totalCompletedHours: number;
+  generatedAt: string;           // ISO timestamp
+  replanReason?: string;
+};
+
+// ── App state ────────────────────────────────────────────────────────────────
 
 type AppState = {
   goals: Goal[];
   lastDailyBoardDate: string;
+  timeEstimates: TimeEstimate[];
+  dailyPlans: Record<string, DailyPlan>;
+  schedulerLastRun: string | null;
 
   addGoal: (goal: Omit<Goal, 'id' | 'createdAt' | 'subGoals' | 'archived'> & { subGoals: Omit<SubGoal, 'id' | 'goalId'>[] }) => string;
   updateGoal: (id: string, updates: Partial<Goal>) => void;
@@ -98,6 +133,14 @@ type AppState = {
   updateSubGoal: (goalId: string, subGoalId: string, updates: Partial<Pick<SubGoal, 'title' | 'description'>>) => void;
   deleteSubGoal: (goalId: string, subGoalId: string) => void;
   updateSubGoalIncluded: (goalId: string, subGoalId: string, included: boolean) => void;
+
+  // Scheduler actions
+  setTimeEstimates: (estimates: TimeEstimate[]) => void;
+  setDailyPlans: (plans: Record<string, DailyPlan>) => void;
+  updateDailyPlan: (date: string, plan: DailyPlan) => void;
+  updateScheduledBlock: (date: string, blockId: string, updates: Partial<ScheduledBlock>) => void;
+  setSchedulerLastRun: (ts: string) => void;
+  setGoalWarning: (goalId: string, warning: 'deadline_at_risk' | undefined) => void;
 };
 
 const priorityToColor: Record<Priority, GoalColor> = {
@@ -111,6 +154,9 @@ export const useStore = create<AppState>()(
     (set) => ({
       goals: [],
       lastDailyBoardDate: todayISO(),
+      timeEstimates: [],
+      dailyPlans: {},
+      schedulerLastRun: null,
 
       addGoal: (goalData) => {
         const id = uuid();
@@ -167,8 +213,8 @@ export const useStore = create<AppState>()(
       },
 
       toggleSubGoal: (goalId, subGoalId) => {
-        set((state) => ({
-          goals: state.goals.map((g) => {
+        set((state) => {
+          const newGoals = state.goals.map((g) => {
             if (g.id !== goalId) return g;
             return {
               ...g,
@@ -182,8 +228,32 @@ export const useStore = create<AppState>()(
                 };
               }),
             };
-          }),
-        }));
+          });
+
+          // When marking a subgoal complete, mark its scheduled block as done
+          const subGoal = newGoals.find(g => g.id === goalId)?.subGoals.find(sg => sg.id === subGoalId);
+          if (subGoal?.completed) {
+            const today = todayISO();
+            const plan = state.dailyPlans[today];
+            if (plan) {
+              const updatedBlocks = plan.blocks.map(b =>
+                b.subGoalId === subGoalId && b.status !== 'done'
+                  ? { ...b, status: 'done' as const, completedHours: b.allocatedHours }
+                  : b
+              );
+              const totalCompleted = updatedBlocks.reduce((s, b) => s + b.completedHours, 0);
+              return {
+                goals: newGoals,
+                dailyPlans: {
+                  ...state.dailyPlans,
+                  [today]: { ...plan, blocks: updatedBlocks, totalCompletedHours: totalCompleted },
+                },
+              };
+            }
+          }
+
+          return { goals: newGoals };
+        });
         invalidateDailyCache();
       },
 
@@ -246,6 +316,57 @@ export const useStore = create<AppState>()(
           }),
         }));
       },
+
+      // ── Scheduler actions ──────────────────────────────────────────────
+
+      setTimeEstimates: (incoming) => {
+        set((state) => {
+          const existing = state.timeEstimates.filter(
+            (e) => !incoming.find((i) => i.subGoalId === e.subGoalId)
+          );
+          return { timeEstimates: [...existing, ...incoming] };
+        });
+      },
+
+      setDailyPlans: (plans) => {
+        set({ dailyPlans: plans });
+      },
+
+      updateDailyPlan: (date, plan) => {
+        set((state) => ({
+          dailyPlans: { ...state.dailyPlans, [date]: plan },
+        }));
+      },
+
+      updateScheduledBlock: (date, blockId, updates) => {
+        set((state) => {
+          const plan = state.dailyPlans[date];
+          if (!plan) return {};
+          const updatedBlocks = plan.blocks.map((b) =>
+            b.id === blockId ? { ...b, ...updates } : b
+          );
+          const totalCompleted = updatedBlocks.reduce((s, b) => s + b.completedHours, 0);
+          return {
+            dailyPlans: {
+              ...state.dailyPlans,
+              [date]: { ...plan, blocks: updatedBlocks, totalCompletedHours: totalCompleted },
+            },
+          };
+        });
+      },
+
+      setSchedulerLastRun: (ts) => {
+        set({ schedulerLastRun: ts });
+      },
+
+      setGoalWarning: (goalId, warning) => {
+        set((state) => ({
+          goals: state.goals.map((g) =>
+            g.id === goalId ? { ...g, scheduleWarning: warning } : g
+          ),
+        }));
+      },
+
     }),
     {
       name: 'forge-app-state',

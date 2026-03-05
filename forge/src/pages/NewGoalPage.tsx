@@ -19,7 +19,8 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { useStore } from '../store/useStore';
 import { decomposeGoal, type AISubGoal } from '../lib/claude.ts';
-import type { Priority } from '../store/useStore';
+import { estimateSubGoalTime, triggerFullReplan } from '../lib/schedulerAgent';
+import type { Priority, Goal, TimeEstimate } from '../store/useStore';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -33,6 +34,8 @@ type FormData = {
 type SubGoalDraft = AISubGoal & {
   id: string;
   included: boolean;
+  estimatedHours?: number;
+  estimating?: boolean;
 };
 
 // ── Sortable sub-goal card ─────────────────────────────────────────────────
@@ -114,8 +117,21 @@ function SortableSubGoalCard({
 
       {/* Content */}
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ color: sg.included ? 'var(--text)' : 'var(--muted)', fontSize: '0.9rem', fontFamily: '"Syne", sans-serif', fontWeight: 500 }}>
-          {sg.title}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <span style={{ color: sg.included ? 'var(--text)' : 'var(--muted)', fontSize: '0.9rem', fontFamily: '"Syne", sans-serif', fontWeight: 500 }}>
+            {sg.title}
+          </span>
+          {sg.estimating && (
+            <span style={{ fontSize: '0.7rem', color: 'var(--amber)', fontFamily: '"DM Mono", monospace', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+              <span className="spinner" style={{ width: 10, height: 10, border: '1.5px solid var(--border)', borderTopColor: 'var(--amber)', borderRadius: '50%', display: 'inline-block' }} />
+              Estimating...
+            </span>
+          )}
+          {!sg.estimating && sg.estimatedHours !== undefined && (
+            <span style={{ fontSize: '0.7rem', color: 'var(--muted)', fontFamily: '"DM Mono", monospace', backgroundColor: 'var(--bg)', padding: '1px 6px', borderRadius: 2, border: '1px solid var(--border)' }}>
+              ~ {sg.estimatedHours} hrs
+            </span>
+          )}
         </div>
         <div style={{ color: 'var(--muted)', fontSize: '0.8rem', fontFamily: '"Syne", sans-serif', marginTop: '0.2rem', lineHeight: 1.4 }}>
           {sg.description}
@@ -155,7 +171,9 @@ export default function NewGoalPage() {
   const [loading, setLoading] = useState(false);
   const [loadingMsgIdx, setLoadingMsgIdx] = useState(0);
   const [aiError, setAiError] = useState<string | null>(null);
+  const [estimateError, setEstimateError] = useState<string | null>(null);
   const [customInput, setCustomInput] = useState('');
+  const [saving, setSaving] = useState(false);
 
   // DnD sensors
   const sensors = useSensors(
@@ -173,11 +191,53 @@ export default function NewGoalPage() {
     return Object.keys(errs).length === 0;
   };
 
+  // ── Run estimation on draft subgoals ─────────────────────────────────────
+
+  const runEstimation = useCallback(async (drafts: SubGoalDraft[], formData: FormData) => {
+    setEstimateError(null);
+    setSubGoals((prev) =>
+      prev.map((sg) => ({ ...sg, estimating: sg.included }))
+    );
+
+    // Build a minimal Goal-shaped object for the estimator
+    const mockGoal: Goal = {
+      id: '_draft_',
+      title: formData.title,
+      description: formData.description || undefined,
+      priority: formData.priority,
+      deadline: formData.deadline,
+      createdAt: new Date().toISOString(),
+      subGoals: [],
+      color: 'amber',
+      archived: false,
+    };
+
+    try {
+      const includedDrafts = drafts.filter((sg) => sg.included);
+      const estimates = await estimateSubGoalTime(includedDrafts, mockGoal);
+      const estimateMap = new Map(estimates.map((e) => [e.subGoalId, e.estimatedHours]));
+
+      setSubGoals((prev) =>
+        prev.map((sg) => ({
+          ...sg,
+          estimating: false,
+          estimatedHours: estimateMap.get(sg.id) ?? sg.estimatedHours,
+        }))
+      );
+    } catch {
+      setEstimateError("Couldn't reach the AI. Using default estimates.");
+      setSubGoals((prev) =>
+        prev.map((sg) => ({ ...sg, estimating: false, estimatedHours: sg.estimatedHours ?? 2 }))
+      );
+    }
+  }, []);
+
   // ── AI call ─────────────────────────────────────────────────────────────
 
   const callAI = useCallback(async () => {
     setLoading(true);
     setAiError(null);
+    setEstimateError(null);
     setLoadingMsgIdx(0);
 
     const interval = setInterval(() => {
@@ -192,24 +252,28 @@ export default function NewGoalPage() {
         priority: form.priority,
       });
 
-      setSubGoals(
-        result.map((sg, idx) => ({
-          ...sg,
-          id: `sg-${idx}-${Date.now()}`,
-          included: true,
-        }))
-      );
+      const drafts: SubGoalDraft[] = result.map((sg, idx) => ({
+        ...sg,
+        id: `sg-${idx}-${Date.now()}`,
+        included: true,
+      }));
+
+      setSubGoals(drafts);
+      clearInterval(interval);
+      setLoading(false);
+
+      // Start estimation immediately after decomposition (non-blocking)
+      runEstimation(drafts, form);
     } catch (err) {
       const msg =
         err instanceof Error && err.message === 'MISSING_API_KEY'
           ? 'No API key found. Add VITE_ANTHROPIC_API_KEY to your .env.local file.'
           : `Error: ${err instanceof Error ? err.message : String(err)}`;
       setAiError(msg);
-    } finally {
       clearInterval(interval);
       setLoading(false);
     }
-  }, [form]);
+  }, [form, runEstimation]);
 
   // ── Step transitions ────────────────────────────────────────────────────
 
@@ -223,6 +287,7 @@ export default function NewGoalPage() {
     setStep(1);
     setSubGoals([]);
     setAiError(null);
+    setEstimateError(null);
   };
 
   // ── DnD handler ─────────────────────────────────────────────────────────
@@ -262,7 +327,10 @@ export default function NewGoalPage() {
 
   // ── Save ────────────────────────────────────────────────────────────────
 
-  const handleSave = () => {
+  const handleSave = async () => {
+    setSaving(true);
+    setEstimateError(null);
+
     const mapped = subGoals.map((sg, idx) => ({
       title: sg.title,
       description: sg.description,
@@ -271,7 +339,7 @@ export default function NewGoalPage() {
       includedInPlan: sg.included,
     }));
 
-    addGoal({
+    const goalId = addGoal({
       title: form.title,
       description: form.description || undefined,
       priority: form.priority,
@@ -280,6 +348,30 @@ export default function NewGoalPage() {
       subGoals: mapped,
     });
 
+    // Remap draft estimates to store IDs by order position
+    const newGoal = useStore.getState().goals.find((g) => g.id === goalId);
+    if (newGoal) {
+      const draftHoursByIdx = new Map(subGoals.map((sg, idx) => [idx, sg.estimatedHours]));
+      const storeSubGoals = [...newGoal.subGoals].sort((a, b) => a.order - b.order);
+      const remapped: TimeEstimate[] = storeSubGoals
+        .filter((sg) => sg.includedInPlan && !sg.completed)
+        .map((sg, idx) => {
+          const hrs = draftHoursByIdx.get(idx);
+          return {
+            subGoalId: sg.id,
+            estimatedHours: hrs ?? 2,
+            confidenceLevel: 'medium' as const,
+            reasoning: hrs !== undefined ? '' : 'Default estimate used.',
+          };
+        });
+
+      if (remapped.length > 0) {
+        useStore.getState().setTimeEstimates(remapped);
+      }
+    }
+
+    triggerFullReplan();
+    setSaving(false);
     navigate('/goals');
   };
 
@@ -452,7 +544,7 @@ export default function NewGoalPage() {
             </div>
           )}
 
-          {/* Error */}
+          {/* AI error */}
           {!loading && aiError && (
             <div
               style={{
@@ -470,6 +562,23 @@ export default function NewGoalPage() {
               <button className="btn-secondary" onClick={callAI} style={{ fontSize: '0.9rem' }}>
                 TRY AGAIN
               </button>
+            </div>
+          )}
+
+          {/* Estimate warning */}
+          {estimateError && (
+            <div
+              style={{
+                padding: '0.75rem 1rem',
+                backgroundColor: 'rgba(245,166,35,0.1)',
+                border: '1px solid var(--amber)',
+                borderRadius: 4,
+                marginBottom: '1rem',
+              }}
+            >
+              <p style={{ color: 'var(--amber)', fontFamily: '"Syne", sans-serif', fontSize: '0.85rem', margin: 0 }}>
+                {estimateError}
+              </p>
             </div>
           )}
 
@@ -508,11 +617,11 @@ export default function NewGoalPage() {
           {/* Action buttons */}
           {!loading && (
             <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1.5rem', flexWrap: 'wrap' }}>
-              <button className="btn-secondary" onClick={handleBack}>
+              <button className="btn-secondary" onClick={handleBack} disabled={saving}>
                 ← BACK
               </button>
               {!aiError && subGoals.length > 0 && (
-                <button className="btn-secondary" onClick={callAI}>
+                <button className="btn-secondary" onClick={callAI} disabled={saving}>
                   REGENERATE ↺
                 </button>
               )}
@@ -520,9 +629,10 @@ export default function NewGoalPage() {
                 <button
                   className="btn-primary"
                   onClick={handleSave}
+                  disabled={saving}
                   style={{ marginLeft: 'auto' }}
                 >
-                  SAVE GOAL →
+                  {saving ? 'SAVING...' : 'SAVE GOAL →'}
                 </button>
               )}
             </div>
