@@ -42,9 +42,12 @@ export async function estimateSubGoalTime(
     return true; // draft subgoal — always estimate
   });
 
+  console.log('[scheduler] estimateSubGoalTime called, eligible:', eligible.length, eligible.map(s => s.title));
+
   if (eligible.length === 0) return [];
 
   try {
+    console.log('[scheduler] POSTing to /api/estimate-time...');
     const res = await fetch('/api/estimate-time', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -56,12 +59,15 @@ export async function estimateSubGoalTime(
       }),
     });
 
+    console.log('[scheduler] /api/estimate-time response status:', res.status);
+
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.error ?? `Server error ${res.status}`);
     }
 
     const text = await res.text();
+    console.log('[scheduler] raw response text:', text);
     const parsed = JSON.parse(text);
 
     const estimates: TimeEstimate[] = (parsed.estimates ?? []).map((e: {
@@ -76,12 +82,11 @@ export async function estimateSubGoalTime(
       reasoning: e.reasoning ?? '',
     }));
 
-    // Save to store
+    console.log('[scheduler] parsed estimates:', estimates);
     useStore.getState().setTimeEstimates(estimates);
-    console.log('[schedulerAgent] estimates saved:', estimates);
     return estimates;
   } catch (err) {
-    console.error('[schedulerAgent] estimateSubGoalTime error:', err);
+    console.error('[scheduler] estimateSubGoalTime FAILED:', err);
     const fallback: TimeEstimate[] = eligible.map((sg) => ({
       subGoalId: sg.id,
       estimatedHours: DEFAULT_HOURS,
