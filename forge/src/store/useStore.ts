@@ -40,6 +40,8 @@ type AppState = {
   toggleSubGoal: (goalId: string, subGoalId: string) => void;
   reorderSubGoals: (goalId: string, subGoals: SubGoal[]) => void;
   addSubGoal: (goalId: string, subGoal: Omit<SubGoal, 'id' | 'goalId'>) => void;
+  updateSubGoal: (goalId: string, subGoalId: string, updates: Partial<Pick<SubGoal, 'title' | 'description'>>) => void;
+  deleteSubGoal: (goalId: string, subGoalId: string) => void;
   updateSubGoalIncluded: (goalId: string, subGoalId: string, included: boolean) => void;
 };
 
@@ -150,6 +152,30 @@ export const useStore = create<AppState>()(
             return { ...g, subGoals: [...g.subGoals, newSg] };
           }),
         }));
+      },
+
+      updateSubGoal: (goalId, subGoalId, updates) => {
+        set((state) => ({
+          goals: state.goals.map((g) => {
+            if (g.id !== goalId) return g;
+            return {
+              ...g,
+              subGoals: g.subGoals.map((sg) =>
+                sg.id === subGoalId ? { ...sg, ...updates } : sg
+              ),
+            };
+          }),
+        }));
+      },
+
+      deleteSubGoal: (goalId, subGoalId) => {
+        set((state) => ({
+          goals: state.goals.map((g) => {
+            if (g.id !== goalId) return g;
+            return { ...g, subGoals: g.subGoals.filter((sg) => sg.id !== subGoalId) };
+          }),
+        }));
+        invalidateDailyCache();
       },
 
       updateSubGoalIncluded: (goalId, subGoalId, included) => {

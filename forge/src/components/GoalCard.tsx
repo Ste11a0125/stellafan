@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { Goal, Priority } from '../store/useStore';
+import type { Goal, Priority, SubGoal } from '../store/useStore';
 import { useStore } from '../store/useStore';
 import { formatDeadline, priorityColor } from '../lib/utils';
 import ProgressBar from './ProgressBar';
@@ -9,6 +9,13 @@ type Props = {
   goal: Goal;
 };
 
+type EditableMilestone = {
+  id: string;
+  title: string;
+  description: string;
+  isNew?: boolean;
+};
+
 export default function GoalCard({ goal }: Props) {
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -16,9 +23,14 @@ export default function GoalCard({ goal }: Props) {
   const [editDescription, setEditDescription] = useState(goal.description ?? '');
   const [editPriority, setEditPriority] = useState<Priority>(goal.priority);
   const [editDeadline, setEditDeadline] = useState(goal.deadline);
+  const [editMilestones, setEditMilestones] = useState<EditableMilestone[]>([]);
+  const [expandedMilestone, setExpandedMilestone] = useState<string | null>(null);
 
   const toggleSubGoal = useStore((s) => s.toggleSubGoal);
   const updateGoal = useStore((s) => s.updateGoal);
+  const updateSubGoal = useStore((s) => s.updateSubGoal);
+  const deleteSubGoal = useStore((s) => s.deleteSubGoal);
+  const addSubGoal = useStore((s) => s.addSubGoal);
 
   const includedSubGoals = goal.subGoals.filter((sg) => sg.includedInPlan);
   const completedCount = includedSubGoals.filter((sg) => sg.completed).length;
@@ -43,18 +55,75 @@ export default function GoalCard({ goal }: Props) {
     setEditDescription(goal.description ?? '');
     setEditPriority(goal.priority);
     setEditDeadline(goal.deadline);
+    setEditMilestones([]);
+    setExpandedMilestone(null);
     setModalOpen(true);
+  };
+
+  const startEditing = () => {
+    setEditMilestones(
+      [...goal.subGoals]
+        .sort((a, b) => a.order - b.order)
+        .map((sg) => ({ id: sg.id, title: sg.title, description: sg.description ?? '' }))
+    );
+    setExpandedMilestone(null);
+    setEditing(true);
   };
 
   const handleSave = () => {
     if (!editTitle.trim() || !editDeadline) return;
+
     updateGoal(goal.id, {
       title: editTitle.trim(),
       description: editDescription.trim() || undefined,
       priority: editPriority,
       deadline: editDeadline,
     });
+
+    // Sync milestone changes
+    const originalIds = new Set(goal.subGoals.map((sg) => sg.id));
+    const keptIds = new Set(editMilestones.filter((m) => !m.isNew).map((m) => m.id));
+
+    // Delete removed milestones
+    for (const sg of goal.subGoals) {
+      if (!keptIds.has(sg.id)) deleteSubGoal(goal.id, sg.id);
+    }
+    // Update existing milestones
+    for (const m of editMilestones) {
+      if (!m.isNew && originalIds.has(m.id)) {
+        updateSubGoal(goal.id, m.id, { title: m.title, description: m.description || undefined });
+      }
+    }
+    // Add new milestones
+    const maxOrder = goal.subGoals.reduce((max, sg) => Math.max(max, sg.order), -1);
+    editMilestones
+      .filter((m) => m.isNew && m.title.trim())
+      .forEach((m, i) => {
+        addSubGoal(goal.id, {
+          title: m.title.trim(),
+          description: m.description.trim() || undefined,
+          completed: false,
+          order: maxOrder + 1 + i,
+          includedInPlan: true,
+        });
+      });
+
     setEditing(false);
+  };
+
+  const addNewMilestone = () => {
+    const tempId = `new-${Date.now()}`;
+    setEditMilestones((prev) => [...prev, { id: tempId, title: '', description: '', isNew: true }]);
+    setExpandedMilestone(tempId);
+  };
+
+  const removeMilestone = (id: string) => {
+    setEditMilestones((prev) => prev.filter((m) => m.id !== id));
+    if (expandedMilestone === id) setExpandedMilestone(null);
+  };
+
+  const updateMilestoneField = (id: string, field: 'title' | 'description', value: string) => {
+    setEditMilestones((prev) => prev.map((m) => m.id === id ? { ...m, [field]: value } : m));
   };
 
   const handleClose = () => {
@@ -289,6 +358,112 @@ export default function GoalCard({ goal }: Props) {
                       </div>
                     </div>
 
+                    {/* Milestones section */}
+                    <div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                        <label style={labelStyle}>MILESTONES</label>
+                        <button
+                          onClick={addNewMilestone}
+                          style={{
+                            background: 'none',
+                            border: '1px solid var(--border)',
+                            borderRadius: 2,
+                            color: 'var(--amber)',
+                            fontSize: '0.65rem',
+                            fontFamily: '"DM Mono", monospace',
+                            letterSpacing: '0.08em',
+                            cursor: 'pointer',
+                            padding: '3px 8px',
+                          }}
+                        >
+                          + ADD
+                        </button>
+                      </div>
+
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                        {editMilestones.map((m) => (
+                          <div
+                            key={m.id}
+                            style={{
+                              backgroundColor: 'var(--bg)',
+                              border: '1px solid var(--border)',
+                              borderRadius: 2,
+                              overflow: 'hidden',
+                            }}
+                          >
+                            {/* Row: title + expand + delete */}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.4rem 0.6rem' }}>
+                              <input
+                                style={{
+                                  ...inputStyle,
+                                  padding: '0.25rem 0.4rem',
+                                  fontSize: '0.85rem',
+                                  border: 'none',
+                                  backgroundColor: 'transparent',
+                                  flex: 1,
+                                }}
+                                value={m.title}
+                                onChange={(e) => updateMilestoneField(m.id, 'title', e.target.value)}
+                                placeholder="Milestone title..."
+                              />
+                              <button
+                                onClick={() => setExpandedMilestone(expandedMilestone === m.id ? null : m.id)}
+                                title="Edit description"
+                                style={{
+                                  background: 'none',
+                                  border: 'none',
+                                  color: expandedMilestone === m.id ? 'var(--amber)' : 'var(--muted)',
+                                  cursor: 'pointer',
+                                  fontSize: '0.75rem',
+                                  padding: '0 4px',
+                                  flexShrink: 0,
+                                }}
+                              >
+                                ✎
+                              </button>
+                              <button
+                                onClick={() => removeMilestone(m.id)}
+                                style={{
+                                  background: 'none',
+                                  border: 'none',
+                                  color: 'var(--muted)',
+                                  cursor: 'pointer',
+                                  fontSize: '1rem',
+                                  padding: '0 4px',
+                                  lineHeight: 1,
+                                  flexShrink: 0,
+                                }}
+                              >
+                                ×
+                              </button>
+                            </div>
+                            {/* Description expand */}
+                            {expandedMilestone === m.id && (
+                              <div style={{ padding: '0 0.6rem 0.5rem' }}>
+                                <textarea
+                                  style={{
+                                    ...inputStyle,
+                                    padding: '0.3rem 0.4rem',
+                                    fontSize: '0.8rem',
+                                    resize: 'vertical',
+                                    minHeight: 56,
+                                  }}
+                                  value={m.description}
+                                  onChange={(e) => updateMilestoneField(m.id, 'description', e.target.value)}
+                                  placeholder="Optional description..."
+                                />
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                        {editMilestones.length === 0 && (
+                          <p style={{ color: 'var(--muted)', fontSize: '0.8rem', fontFamily: '"Syne", sans-serif', margin: 0 }}>
+                            No milestones yet. Hit + ADD to create one.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
                     <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.5rem' }}>
                       <button
                         className="btn-primary"
@@ -341,7 +516,7 @@ export default function GoalCard({ goal }: Props) {
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
                       <button
-                        onClick={() => setEditing(true)}
+                        onClick={startEditing}
                         style={{
                           background: 'none',
                           border: '1px solid var(--border)',
