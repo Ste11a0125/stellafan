@@ -51,7 +51,7 @@ function apiPlugin() {
         try {
           const body = JSON.parse(await readBody(req));
           const data = await callAnthropic({
-            model: 'claude-sonnet-4-20250514',
+            model: 'claude-sonnet-4-6',
             max_tokens: 1500,
             system:
               'You are a goal decomposition assistant. Break a goal into 4–8 clear, actionable milestones. ' +
