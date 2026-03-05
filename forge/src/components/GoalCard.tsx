@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { Goal } from '../store/useStore';
+import type { Goal, Priority } from '../store/useStore';
 import { useStore } from '../store/useStore';
 import { formatDeadline, priorityColor } from '../lib/utils';
 import ProgressBar from './ProgressBar';
@@ -11,7 +11,14 @@ type Props = {
 
 export default function GoalCard({ goal }: Props) {
   const [modalOpen, setModalOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState(goal.title);
+  const [editDescription, setEditDescription] = useState(goal.description ?? '');
+  const [editPriority, setEditPriority] = useState<Priority>(goal.priority);
+  const [editDeadline, setEditDeadline] = useState(goal.deadline);
+
   const toggleSubGoal = useStore((s) => s.toggleSubGoal);
+  const updateGoal = useStore((s) => s.updateGoal);
 
   const includedSubGoals = goal.subGoals.filter((sg) => sg.includedInPlan);
   const completedCount = includedSubGoals.filter((sg) => sg.completed).length;
@@ -30,10 +37,57 @@ export default function GoalCard({ goal }: Props) {
 
   const isAllDone = totalCount > 0 && completedCount === totalCount;
 
+  const openModal = () => {
+    setEditing(false);
+    setEditTitle(goal.title);
+    setEditDescription(goal.description ?? '');
+    setEditPriority(goal.priority);
+    setEditDeadline(goal.deadline);
+    setModalOpen(true);
+  };
+
+  const handleSave = () => {
+    if (!editTitle.trim() || !editDeadline) return;
+    updateGoal(goal.id, {
+      title: editTitle.trim(),
+      description: editDescription.trim() || undefined,
+      priority: editPriority,
+      deadline: editDeadline,
+    });
+    setEditing(false);
+  };
+
+  const handleClose = () => {
+    setModalOpen(false);
+    setEditing(false);
+  };
+
+  const inputStyle = {
+    width: '100%',
+    backgroundColor: 'var(--bg)',
+    border: '1px solid var(--border)',
+    borderRadius: 2,
+    color: 'var(--text)',
+    fontFamily: '"Syne", sans-serif',
+    fontSize: '0.9rem',
+    padding: '0.5rem 0.75rem',
+    outline: 'none',
+    boxSizing: 'border-box' as const,
+  };
+
+  const labelStyle = {
+    display: 'block',
+    fontSize: '0.65rem',
+    fontFamily: '"DM Mono", monospace',
+    color: 'var(--muted)',
+    letterSpacing: '0.1em',
+    marginBottom: '0.35rem',
+  };
+
   return (
     <>
       <div
-        onClick={() => setModalOpen(true)}
+        onClick={openModal}
         style={{
           backgroundColor: 'var(--bg2)',
           border: '1px solid var(--border)',
@@ -121,7 +175,7 @@ export default function GoalCard({ goal }: Props) {
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                setModalOpen(true);
+                openModal();
               }}
               style={{
                 background: 'none',
@@ -155,7 +209,7 @@ export default function GoalCard({ goal }: Props) {
             justifyContent: 'center',
             padding: '1rem',
           }}
-          onClick={() => setModalOpen(false)}
+          onClick={handleClose}
         >
           <div
             style={{
@@ -173,107 +227,216 @@ export default function GoalCard({ goal }: Props) {
           >
             <div style={{ height: 4, backgroundColor: accentColor }} />
             <div style={{ padding: '1.5rem' }}>
-              {/* Modal header */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem' }}>
-                <div>
-                  <span
-                    style={{
-                      fontSize: '0.65rem',
-                      fontFamily: '"DM Mono", monospace',
-                      color: accentColor,
-                      letterSpacing: '0.1em',
-                    }}
-                  >
-                    {priorityLabels[goal.priority]} · {formatDeadline(goal.deadline)}
-                  </span>
-                  <h2
-                    style={{
-                      fontFamily: '"Bebas Neue", cursive',
-                      fontSize: '1.8rem',
-                      letterSpacing: '0.05em',
-                      color: 'var(--text)',
-                      margin: '0.25rem 0 0',
-                    }}
-                  >
-                    {goal.title}
-                  </h2>
-                  {goal.description && (
-                    <p style={{ color: 'var(--muted)', fontSize: '0.85rem', margin: '0.5rem 0 0', lineHeight: 1.5 }}>
-                      {goal.description}
-                    </p>
-                  )}
-                </div>
-                <button
-                  onClick={() => setModalOpen(false)}
-                  style={{
-                    background: 'none',
-                    border: 'none',
-                    color: 'var(--muted)',
-                    fontSize: '1.5rem',
-                    cursor: 'pointer',
-                    padding: 0,
-                    lineHeight: 1,
-                    flexShrink: 0,
-                  }}
-                >
-                  ×
-                </button>
-              </div>
 
-              {/* Progress summary */}
-              <div style={{ marginBottom: '1rem' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.4rem' }}>
-                  <span style={{ fontSize: '0.75rem', color: 'var(--muted)', fontFamily: '"DM Mono", monospace' }}>
-                    {completedCount} of {totalCount} milestones complete
-                  </span>
-                  <span style={{ fontSize: '0.75rem', color: accentColor, fontFamily: '"DM Mono", monospace' }}>
-                    {percentage}%
-                  </span>
-                </div>
-                <ProgressBar value={percentage} color={accentColor} height={6} />
-              </div>
-
-              {/* All sub-goals */}
-              <div>
-                {[...includedSubGoals]
-                  .sort((a, b) => a.order - b.order)
-                  .map((sg) => (
-                    <SubGoalItem
-                      key={sg.id}
-                      subGoal={sg}
-                      onToggle={() => toggleSubGoal(goal.id, sg.id)}
-                      showDescription
-                    />
-                  ))}
-              </div>
-
-              {/* Goal complete banner */}
-              {isAllDone && (
-                <div
-                  style={{
-                    marginTop: '1.5rem',
-                    padding: '1rem',
-                    backgroundColor: 'rgba(42, 255, 160, 0.1)',
-                    border: '1px solid var(--green)',
-                    borderRadius: 4,
-                    textAlign: 'center',
-                  }}
-                >
-                  <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>🔥</div>
-                  <div
-                    style={{
-                      fontFamily: '"Bebas Neue", cursive',
-                      fontSize: '1.4rem',
-                      color: 'var(--green)',
-                      letterSpacing: '0.05em',
-                    }}
-                  >
-                    GOAL COMPLETE
+              {editing ? (
+                /* ── EDIT FORM ── */
+                <>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
+                    <span style={{ fontFamily: '"Bebas Neue", cursive', fontSize: '1.2rem', letterSpacing: '0.08em', color: 'var(--amber)' }}>
+                      EDIT GOAL
+                    </span>
+                    <button
+                      onClick={handleClose}
+                      style={{ background: 'none', border: 'none', color: 'var(--muted)', fontSize: '1.5rem', cursor: 'pointer', padding: 0, lineHeight: 1 }}
+                    >
+                      ×
+                    </button>
                   </div>
-                  <p style={{ color: 'var(--muted)', fontSize: '0.85rem', margin: '0.5rem 0 0' }}>
-                    You showed up. That's everything.
-                  </p>
-                </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                    <div>
+                      <label style={labelStyle}>GOAL TITLE</label>
+                      <input
+                        style={inputStyle}
+                        value={editTitle}
+                        onChange={(e) => setEditTitle(e.target.value)}
+                        placeholder="What do you want to achieve?"
+                      />
+                    </div>
+
+                    <div>
+                      <label style={labelStyle}>DESCRIPTION (optional)</label>
+                      <textarea
+                        style={{ ...inputStyle, resize: 'vertical', minHeight: 80 }}
+                        value={editDescription}
+                        onChange={(e) => setEditDescription(e.target.value)}
+                        placeholder="Add context or motivation..."
+                      />
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '1rem' }}>
+                      <div style={{ flex: 1 }}>
+                        <label style={labelStyle}>PRIORITY</label>
+                        <select
+                          style={inputStyle}
+                          value={editPriority}
+                          onChange={(e) => setEditPriority(e.target.value as Priority)}
+                        >
+                          <option value="critical">Critical</option>
+                          <option value="high">High</option>
+                          <option value="normal">Normal</option>
+                        </select>
+                      </div>
+
+                      <div style={{ flex: 1 }}>
+                        <label style={labelStyle}>DEADLINE</label>
+                        <input
+                          type="date"
+                          style={inputStyle}
+                          value={editDeadline}
+                          onChange={(e) => setEditDeadline(e.target.value)}
+                        />
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.5rem' }}>
+                      <button
+                        className="btn-primary"
+                        onClick={handleSave}
+                        disabled={!editTitle.trim() || !editDeadline}
+                      >
+                        SAVE CHANGES
+                      </button>
+                      <button
+                        className="btn-secondary"
+                        onClick={() => setEditing(false)}
+                      >
+                        CANCEL
+                      </button>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                /* ── VIEW MODE ── */
+                <>
+                  {/* Modal header */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem' }}>
+                    <div>
+                      <span
+                        style={{
+                          fontSize: '0.65rem',
+                          fontFamily: '"DM Mono", monospace',
+                          color: accentColor,
+                          letterSpacing: '0.1em',
+                        }}
+                      >
+                        {priorityLabels[goal.priority]} · {formatDeadline(goal.deadline)}
+                      </span>
+                      <h2
+                        style={{
+                          fontFamily: '"Bebas Neue", cursive',
+                          fontSize: '1.8rem',
+                          letterSpacing: '0.05em',
+                          color: 'var(--text)',
+                          margin: '0.25rem 0 0',
+                        }}
+                      >
+                        {goal.title}
+                      </h2>
+                      {goal.description && (
+                        <p style={{ color: 'var(--muted)', fontSize: '0.85rem', margin: '0.5rem 0 0', lineHeight: 1.5 }}>
+                          {goal.description}
+                        </p>
+                      )}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
+                      <button
+                        onClick={() => setEditing(true)}
+                        style={{
+                          background: 'none',
+                          border: '1px solid var(--border)',
+                          borderRadius: 2,
+                          color: 'var(--muted)',
+                          fontSize: '0.7rem',
+                          fontFamily: '"DM Mono", monospace',
+                          letterSpacing: '0.08em',
+                          cursor: 'pointer',
+                          padding: '4px 10px',
+                        }}
+                        onMouseEnter={(e) => {
+                          (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--amber)';
+                          (e.currentTarget as HTMLButtonElement).style.color = 'var(--amber)';
+                        }}
+                        onMouseLeave={(e) => {
+                          (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--border)';
+                          (e.currentTarget as HTMLButtonElement).style.color = 'var(--muted)';
+                        }}
+                      >
+                        EDIT
+                      </button>
+                      <button
+                        onClick={handleClose}
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: 'var(--muted)',
+                          fontSize: '1.5rem',
+                          cursor: 'pointer',
+                          padding: 0,
+                          lineHeight: 1,
+                        }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Progress summary */}
+                  <div style={{ marginBottom: '1rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.4rem' }}>
+                      <span style={{ fontSize: '0.75rem', color: 'var(--muted)', fontFamily: '"DM Mono", monospace' }}>
+                        {completedCount} of {totalCount} milestones complete
+                      </span>
+                      <span style={{ fontSize: '0.75rem', color: accentColor, fontFamily: '"DM Mono", monospace' }}>
+                        {percentage}%
+                      </span>
+                    </div>
+                    <ProgressBar value={percentage} color={accentColor} height={6} />
+                  </div>
+
+                  {/* All sub-goals */}
+                  <div>
+                    {[...includedSubGoals]
+                      .sort((a, b) => a.order - b.order)
+                      .map((sg) => (
+                        <SubGoalItem
+                          key={sg.id}
+                          subGoal={sg}
+                          onToggle={() => toggleSubGoal(goal.id, sg.id)}
+                          showDescription
+                        />
+                      ))}
+                  </div>
+
+                  {/* Goal complete banner */}
+                  {isAllDone && (
+                    <div
+                      style={{
+                        marginTop: '1.5rem',
+                        padding: '1rem',
+                        backgroundColor: 'rgba(42, 255, 160, 0.1)',
+                        border: '1px solid var(--green)',
+                        borderRadius: 4,
+                        textAlign: 'center',
+                      }}
+                    >
+                      <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>🔥</div>
+                      <div
+                        style={{
+                          fontFamily: '"Bebas Neue", cursive',
+                          fontSize: '1.4rem',
+                          color: 'var(--green)',
+                          letterSpacing: '0.05em',
+                        }}
+                      >
+                        GOAL COMPLETE
+                      </div>
+                      <p style={{ color: 'var(--muted)', fontSize: '0.85rem', margin: '0.5rem 0 0' }}>
+                        You showed up. That's everything.
+                      </p>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           </div>

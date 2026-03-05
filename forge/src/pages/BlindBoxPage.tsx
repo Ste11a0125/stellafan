@@ -1,17 +1,13 @@
 import { useState, useMemo } from 'react';
 import { useStore } from '../store/useStore';
-import type { SubGoal, Goal } from '../store/useStore';
+import type { Goal } from '../store/useStore';
+import { priorityColor } from '../lib/utils';
 
-type PickedTask = {
-  subGoal: SubGoal;
-  goal: Goal;
-};
-
-function weightedPick(goals: Goal[]): PickedTask | null {
+function weightedPick(goals: Goal[]): Goal | null {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  const candidates: { task: PickedTask; weight: number }[] = [];
+  const candidates: { goal: Goal; weight: number }[] = [];
 
   for (const goal of goals) {
     if (goal.archived) continue;
@@ -20,10 +16,7 @@ function weightedPick(goals: Goal[]): PickedTask | null {
     deadline.setHours(0, 0, 0, 0);
     const daysLeft = Math.max(1, Math.ceil((deadline.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)));
 
-    const incomplete = goal.subGoals.filter((sg) => sg.includedInPlan && !sg.completed);
-    for (const sg of incomplete) {
-      candidates.push({ task: { subGoal: sg, goal }, weight: 1 / daysLeft });
-    }
+    candidates.push({ goal, weight: 1 / daysLeft });
   }
 
   if (candidates.length === 0) return null;
@@ -32,55 +25,40 @@ function weightedPick(goals: Goal[]): PickedTask | null {
   let rand = Math.random() * totalWeight;
   for (const c of candidates) {
     rand -= c.weight;
-    if (rand <= 0) return c.task;
+    if (rand <= 0) return c.goal;
   }
 
-  return candidates[candidates.length - 1].task;
+  return candidates[candidates.length - 1].goal;
 }
 
 export default function BlindBoxPage() {
   const goals = useStore((s) => s.goals);
-  const toggleSubGoal = useStore((s) => s.toggleSubGoal);
 
   const [revealed, setRevealed] = useState(false);
   const [shaking, setShaking] = useState(false);
-  const [currentTask, setCurrentTask] = useState<PickedTask | null>(null);
-  const [markedDone, setMarkedDone] = useState(false);
+  const [currentGoal, setCurrentGoal] = useState<Goal | null>(null);
 
-  const hasIncomplete = useMemo(() => {
-    return goals.some((g) =>
-      !g.archived && g.subGoals.some((sg) => sg.includedInPlan && !sg.completed)
-    );
-  }, [goals]);
+  const activeGoals = useMemo(() => goals.filter((g) => !g.archived), [goals]);
+  const hasGoals = activeGoals.length > 0;
 
   const reveal = () => {
     setShaking(true);
     setTimeout(() => {
       setShaking(false);
-      const task = weightedPick(goals);
-      setCurrentTask(task);
+      const picked = weightedPick(goals);
+      setCurrentGoal(picked);
       setRevealed(true);
-      setMarkedDone(false);
     }, 600);
-  };
-
-  const handleMarkDone = () => {
-    if (!currentTask) return;
-    toggleSubGoal(currentTask.goal.id, currentTask.subGoal.id);
-    setMarkedDone(true);
   };
 
   const handleAnother = () => {
     setRevealed(false);
-    setCurrentTask(null);
-    setMarkedDone(false);
+    setCurrentGoal(null);
     setTimeout(reveal, 100);
   };
 
   const handleRevealClick = () => {
-    if (!revealed) {
-      reveal();
-    }
+    if (!revealed) reveal();
   };
 
   return (
@@ -114,10 +92,10 @@ export default function BlindBoxPage() {
           marginBottom: '3rem',
         }}
       >
-        Let fate decide what you work on next.
+        Let fate decide what you focus on next.
       </p>
 
-      {!hasIncomplete && (
+      {!hasGoals && (
         <div
           style={{
             padding: '1.5rem 2rem',
@@ -136,15 +114,15 @@ export default function BlindBoxPage() {
               margin: 0,
             }}
           >
-            ALL TASKS COMPLETE
+            NO GOALS YET
           </p>
           <p style={{ color: 'var(--muted)', fontSize: '0.85rem', fontFamily: '"Syne", sans-serif', margin: '0.5rem 0 0' }}>
-            Nothing left to pick. You're crushing it.
+            Add some goals first, then come back.
           </p>
         </div>
       )}
 
-      {hasIncomplete && (
+      {hasGoals && (
         <>
           {/* Mystery box */}
           <div
@@ -186,19 +164,19 @@ export default function BlindBoxPage() {
               onClick={reveal}
               style={{ fontSize: '1.2rem', padding: '0.75rem 2.5rem' }}
             >
-              REVEAL A TASK
+              REVEAL A GOAL
             </button>
           )}
 
-          {/* Revealed task */}
-          {revealed && currentTask && !shaking && (
+          {/* Revealed goal */}
+          {revealed && currentGoal && !shaking && (
             <div
               style={{
                 width: '100%',
                 maxWidth: 480,
                 backgroundColor: 'var(--bg2)',
-                border: '1px solid var(--amber)',
-                borderLeft: '4px solid var(--amber)',
+                border: `1px solid ${priorityColor(currentGoal.priority)}`,
+                borderLeft: `4px solid ${priorityColor(currentGoal.priority)}`,
                 borderRadius: 4,
                 padding: '1.5rem',
                 textAlign: 'left',
@@ -209,28 +187,28 @@ export default function BlindBoxPage() {
                 style={{
                   fontFamily: '"DM Mono", monospace',
                   fontSize: '0.7rem',
-                  color: 'var(--amber)',
+                  color: priorityColor(currentGoal.priority),
                   letterSpacing: '0.1em',
                   margin: '0 0 0.5rem',
                   textTransform: 'uppercase',
                 }}
               >
-                {currentTask.goal.title}
+                {currentGoal.priority} priority
               </p>
 
               <h2
                 style={{
                   fontFamily: '"Bebas Neue", cursive',
-                  fontSize: '1.5rem',
+                  fontSize: '1.8rem',
                   letterSpacing: '0.04em',
                   color: 'var(--text)',
                   margin: '0 0 0.5rem',
                 }}
               >
-                {currentTask.subGoal.title}
+                {currentGoal.title}
               </h2>
 
-              {currentTask.subGoal.description && (
+              {currentGoal.description && (
                 <p
                   style={{
                     color: 'var(--muted)',
@@ -240,7 +218,7 @@ export default function BlindBoxPage() {
                     lineHeight: 1.5,
                   }}
                 >
-                  {currentTask.subGoal.description}
+                  {currentGoal.description}
                 </p>
               )}
 
@@ -253,41 +231,16 @@ export default function BlindBoxPage() {
                   margin: '0 0 1.25rem',
                 }}
               >
-                Ready? This one's yours.
+                This is your focus. Make it count.
               </p>
 
-              {markedDone ? (
-                <div style={{ color: 'var(--green)', fontFamily: '"Bebas Neue", cursive', fontSize: '1.1rem', letterSpacing: '0.06em' }}>
-                  ✓ MARKED DONE — NICE WORK!
-                </div>
-              ) : (
-                <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-                  <button
-                    className="btn-primary"
-                    onClick={handleMarkDone}
-                  >
-                    MARK DONE ✓
-                  </button>
-                  <button
-                    className="btn-secondary"
-                    onClick={handleAnother}
-                  >
-                    GIVE ME ANOTHER →
-                  </button>
-                </div>
-              )}
+              <button
+                className="btn-secondary"
+                onClick={handleAnother}
+              >
+                GIVE ME ANOTHER →
+              </button>
             </div>
-          )}
-
-          {/* After marking done: another */}
-          {revealed && markedDone && (
-            <button
-              className="btn-secondary"
-              onClick={handleAnother}
-              style={{ marginTop: '1rem' }}
-            >
-              GIVE ME ANOTHER →
-            </button>
           )}
         </>
       )}
