@@ -1,7 +1,62 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import type { StorageValue } from 'zustand/middleware';
 import { uuid, todayISO } from '../lib/utils';
 import { invalidateDailyCache } from '../lib/scheduler';
+
+// Custom storage: writes to a file via the Vite dev server API, falls back to localStorage.
+const fileStorage = {
+  async getItem(name: string): Promise<StorageValue<unknown> | null> {
+    try {
+      const res = await fetch('/api/state');
+      if (!res.ok) throw new Error('no api');
+      const text = await res.text();
+      if (!text || text === 'null') return null;
+      const data = JSON.parse(text);
+      return data?.[name] ?? null;
+    } catch {
+      const raw = localStorage.getItem(name);
+      return raw ? JSON.parse(raw) : null;
+    }
+  },
+  async setItem(name: string, value: StorageValue<unknown>): Promise<void> {
+    const payload: Record<string, unknown> = {};
+    try {
+      const res = await fetch('/api/state');
+      if (res.ok) {
+        const text = await res.text();
+        if (text && text !== 'null') Object.assign(payload, JSON.parse(text));
+      }
+    } catch { /* ignore */ }
+    payload[name] = value;
+    try {
+      await fetch('/api/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    } catch {
+      localStorage.setItem(name, JSON.stringify(value));
+    }
+  },
+  async removeItem(name: string): Promise<void> {
+    try {
+      const res = await fetch('/api/state');
+      if (res.ok) {
+        const text = await res.text();
+        const payload = text && text !== 'null' ? JSON.parse(text) : {};
+        delete payload[name];
+        await fetch('/api/state', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+      }
+    } catch {
+      localStorage.removeItem(name);
+    }
+  },
+};
 
 export type Priority = 'critical' | 'high' | 'normal';
 export type GoalColor = 'ember' | 'amber' | 'green' | 'blue';
@@ -194,6 +249,7 @@ export const useStore = create<AppState>()(
     }),
     {
       name: 'forge-app-state',
+      storage: fileStorage,
     }
   )
 );
