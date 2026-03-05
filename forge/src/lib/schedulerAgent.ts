@@ -1,5 +1,5 @@
 import { useStore } from '../store/useStore';
-import type { Goal, SubGoal, TimeEstimate, ScheduledBlock, DailyPlan } from '../store/useStore';
+import type { Goal, TimeEstimate, ScheduledBlock, DailyPlan } from '../store/useStore';
 import { uuid, todayISO } from './utils';
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -36,10 +36,7 @@ export async function estimateSubGoalTime(
   subGoals: Array<{ id: string; title: string; description?: string }>,
   goal: Goal
 ): Promise<TimeEstimate[]> {
-  const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY as string | undefined;
-
   const eligible = subGoals.filter((sg) => {
-    // Only estimate subgoals that are active (for draft/store subgoals)
     const storeSg = goal.subGoals?.find((s) => s.id === sg.id);
     if (storeSg) return storeSg.includedInPlan && !storeSg.completed;
     return true; // draft subgoal — always estimate
@@ -47,65 +44,24 @@ export async function estimateSubGoalTime(
 
   if (eligible.length === 0) return [];
 
-  const userPrompt =
-    `Goal: ${goal.title}\n` +
-    `Priority: ${goal.priority}\n` +
-    `Deadline: ${goal.deadline}\n\n` +
-    `Estimate hours for each of these subgoals:\n` +
-    eligible
-      .map((sg) => `- ID: ${sg.id} | Title: ${sg.title} | Description: ${sg.description ?? 'N/A'}`)
-      .join('\n');
-
-  if (!apiKey) {
-    console.warn('[schedulerAgent] VITE_ANTHROPIC_API_KEY not set — using default estimates');
-    return eligible.map((sg) => ({
-      subGoalId: sg.id,
-      estimatedHours: DEFAULT_HOURS,
-      confidenceLevel: 'low',
-      reasoning: 'No API key — using default estimate.',
-    }));
-  }
-
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    const res = await fetch('/api/estimate-time', {
       method: 'POST',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-        'anthropic-dangerous-direct-browser-access': 'true',
-      },
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 1000,
-        system:
-          'You are a realistic project time estimator. You estimate how many hours a motivated but non-expert person would need to complete a milestone, working in focused sessions.\n\n' +
-          'Rules:\n' +
-          '- Be realistic, not optimistic. Add 20% buffer to your raw estimate.\n' +
-          '- Minimum estimate: 0.5 hours. Maximum: 8 hours per subgoal.\n' +
-          '- If a subgoal is vague, estimate on the higher end.\n' +
-          '- Return ONLY valid JSON. No markdown. No preamble.\n\n' +
-          'JSON schema:\n' +
-          '{\n' +
-          '  "estimates": [\n' +
-          '    {\n' +
-          '      "subGoalId": string,\n' +
-          '      "estimatedHours": number,\n' +
-          '      "confidenceLevel": "low" | "medium" | "high",\n' +
-          '      "reasoning": string\n' +
-          '    }\n' +
-          '  ]\n' +
-          '}',
-        messages: [{ role: 'user', content: userPrompt }],
+        goalTitle: goal.title,
+        priority: goal.priority,
+        deadline: goal.deadline,
+        subGoals: eligible,
       }),
     });
 
     if (!res.ok) {
-      throw new Error(`API error ${res.status}`);
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error ?? `Server error ${res.status}`);
     }
 
-    const data = await res.json();
-    const text: string = data.content?.[0]?.text ?? '{}';
+    const text = await res.text();
     const parsed = JSON.parse(text);
 
     const estimates: TimeEstimate[] = (parsed.estimates ?? []).map((e: {
@@ -154,7 +110,7 @@ export function buildSchedule(
     priorityOrder: number;
     deadline: string;
     order: number;
-    subGoalObj: SubGoal;
+    subGoalObj: { id: string; title: string; order: number };
   };
 
   const queue: WorkItem[] = [];
@@ -418,33 +374,15 @@ export async function runEndOfDay(date: string): Promise<{ rolledOverHours: numb
 }
 
 async function fetchReplanNote(rolledHours: number, count: number): Promise<string> {
-  const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY as string | undefined;
-  if (!apiKey) return '';
-
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    const res = await fetch('/api/replan-note', {
       method: 'POST',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-        'anthropic-dangerous-direct-browser-access': 'true',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 100,
-        system: 'You write brief, motivating one-sentence notes about replanning work. Return only the sentence, no quotes.',
-        messages: [
-          {
-            role: 'user',
-            content: `${count} task(s) totalling ${rolledHours.toFixed(1)} hours rolled over to tomorrow. Write one sentence explaining the situation and encouraging the user.`,
-          },
-        ],
-      }),
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ rolledHours: rolledHours.toFixed(1), count }),
     });
     if (!res.ok) return '';
     const data = await res.json();
-    return data.content?.[0]?.text?.trim() ?? '';
+    return data.note ?? '';
   } catch {
     return '';
   }
