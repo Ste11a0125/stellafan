@@ -1,9 +1,9 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useStore } from '../store/useStore';
-import { getDailyTasks, type DailyTask } from '../lib/scheduler';
-import { priorityColor } from '../lib/utils';
+import { buildSchedule, runEndOfDay, triggerFullReplan } from '../lib/schedulerAgent';
+import { priorityColor, todayISO } from '../lib/utils';
 import ProgressBar from '../components/ProgressBar';
-import SubGoalItem from '../components/SubGoalItem';
+import type { ScheduledBlock, Goal } from '../store/useStore';
 
 function greeting(): string {
   const h = new Date().getHours();
@@ -21,31 +21,221 @@ function formatToday(): string {
   });
 }
 
+// ── Time logging input ────────────────────────────────────────────────────
+
+function TimeLogger({
+  block,
+  onUpdate,
+}: {
+  block: ScheduledBlock;
+  onUpdate: (hours: number) => void;
+}) {
+  const [val, setVal] = useState(block.completedHours.toString());
+
+  const handleBlur = () => {
+    const parsed = Math.min(block.allocatedHours, Math.max(0, parseFloat(val) || 0));
+    setVal(parsed.toString());
+    onUpdate(parsed);
+  };
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+      <input
+        type="number"
+        value={val}
+        min={0}
+        max={block.allocatedHours}
+        step={0.5}
+        onChange={(e) => setVal(e.target.value)}
+        onBlur={handleBlur}
+        disabled={block.status === 'done' || block.status === 'rolled-over'}
+        style={{
+          width: 56,
+          backgroundColor: 'var(--bg)',
+          border: '1px solid var(--border)',
+          borderRadius: 2,
+          color: 'var(--text)',
+          fontFamily: '"DM Mono", monospace',
+          fontSize: '0.8rem',
+          padding: '3px 6px',
+          outline: 'none',
+          opacity: block.status === 'done' || block.status === 'rolled-over' ? 0.5 : 1,
+        }}
+      />
+      <span style={{ color: 'var(--muted)', fontSize: '0.75rem', fontFamily: '"DM Mono", monospace' }}>
+        / {block.allocatedHours} hrs
+      </span>
+    </div>
+  );
+}
+
+// ── Block status badge ────────────────────────────────────────────────────
+
+function StatusBadge({ status }: { status: ScheduledBlock['status'] }) {
+  const cfg: Record<ScheduledBlock['status'], { label: string; color: string }> = {
+    planned: { label: 'PLANNED', color: 'var(--muted)' },
+    done: { label: 'DONE ✓', color: 'var(--green)' },
+    partial: { label: 'PARTIAL', color: 'var(--amber)' },
+    'rolled-over': { label: 'ROLLED OVER', color: 'var(--ember)' },
+  };
+  const { label, color } = cfg[status];
+  return (
+    <span style={{ fontSize: '0.62rem', fontFamily: '"DM Mono", monospace', color, letterSpacing: '0.08em' }}>
+      {label}
+    </span>
+  );
+}
+
+// ── Block row ────────────────────────────────────────────────────────────
+
+function BlockRow({
+  block,
+  subGoalTitle,
+  date,
+}: {
+  block: ScheduledBlock;
+  subGoalTitle: string;
+  date: string;
+}) {
+  const updateScheduledBlock = useStore((s) => s.updateScheduledBlock);
+
+  const handleHoursUpdate = (hours: number) => {
+    let status: ScheduledBlock['status'] = 'planned';
+    if (hours >= block.allocatedHours) status = 'done';
+    else if (hours > 0) status = 'partial';
+    updateScheduledBlock(date, block.id, { completedHours: hours, status });
+  };
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '0.75rem',
+        padding: '0.65rem 0.9rem',
+        backgroundColor: block.status === 'done' ? 'rgba(42,255,160,0.04)' : 'var(--bg2)',
+        border: '1px solid var(--border)',
+        borderLeft: `3px solid ${block.status === 'done' ? 'var(--green)' : block.status === 'rolled-over' ? 'var(--ember)' : 'var(--amber)'}`,
+        marginBottom: '0.4rem',
+        opacity: block.status === 'rolled-over' ? 0.6 : 1,
+      }}
+    >
+      {/* Title & status */}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{
+          fontFamily: '"Syne", sans-serif',
+          fontSize: '0.88rem',
+          color: block.status === 'done' ? 'var(--muted)' : 'var(--text)',
+          textDecoration: block.status === 'done' ? 'line-through' : 'none',
+          marginBottom: '0.15rem',
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+        }}>
+          {subGoalTitle}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <span style={{ fontSize: '0.68rem', color: 'var(--muted)', fontFamily: '"DM Mono", monospace' }}>
+            ~ {block.allocatedHours} hrs
+            {block.rolledOverFrom && ` · rolled from ${block.rolledOverFrom}`}
+          </span>
+          <StatusBadge status={block.status} />
+        </div>
+      </div>
+
+      {/* Time logger */}
+      <TimeLogger block={block} onUpdate={handleHoursUpdate} />
+    </div>
+  );
+}
+
+// ── Main component ────────────────────────────────────────────────────────
+
 export default function DailyBoardPage() {
   const goals = useStore((s) => s.goals);
-  const toggleSubGoal = useStore((s) => s.toggleSubGoal);
-  const [refreshKey, setRefreshKey] = useState(0);
+  const timeEstimates = useStore((s) => s.timeEstimates);
+  const dailyPlans = useStore((s) => s.dailyPlans);
+  const setDailyPlans = useStore((s) => s.setDailyPlans);
 
-  const tasks: DailyTask[] = useMemo(() => {
-    return getDailyTasks(goals);
-  }, [goals, refreshKey]);
+  const today = todayISO();
+  const todayPlan = dailyPlans[today];
 
-  const completedCount = tasks.filter((t) => t.subGoal.completed).length;
-  const totalCount = tasks.length;
-  const percentage = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
-  const allDone = totalCount > 0 && completedCount === totalCount;
+  const [endingDay, setEndingDay] = useState(false);
+  const [rolloverMsg, setRolloverMsg] = useState<string | null>(null);
 
-  // Group tasks by goal
-  const grouped = tasks.reduce<Record<string, DailyTask[]>>((acc, task) => {
-    const key = task.goal.id;
-    if (!acc[key]) acc[key] = [];
-    acc[key].push(task);
-    return acc;
-  }, {});
+  // On mount, build schedule if today has no plan
+  useEffect(() => {
+    if (!todayPlan) {
+      const plans = buildSchedule(goals, timeEstimates);
+      if (Object.keys(plans).length > 0) {
+        const preserved: typeof dailyPlans = {};
+        for (const [date, plan] of Object.entries(dailyPlans)) {
+          if (date < today) preserved[date] = plan;
+        }
+        setDailyPlans({ ...preserved, ...plans });
+      }
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleToggle = (goalId: string, subGoalId: string) => {
-    toggleSubGoal(goalId, subGoalId);
-    setRefreshKey((k) => k + 1);
+  // Replan if goals change and there's still no plan for today
+  useEffect(() => {
+    if (!todayPlan && goals.length > 0) {
+      triggerFullReplan();
+    }
+  }, [goals, todayPlan]);
+
+  const blocks = todayPlan?.blocks ?? [];
+
+  // Map subGoalId → title
+  const subGoalTitles = new Map<string, string>();
+  const subGoalGoalId = new Map<string, string>();
+  for (const goal of goals) {
+    for (const sg of goal.subGoals) {
+      subGoalTitles.set(sg.id, sg.title);
+      subGoalGoalId.set(sg.id, goal.id);
+    }
+  }
+
+  // Group visible blocks by goal
+  const visibleBlocks = blocks.filter((b) => b.status !== 'rolled-over' || b.rolledOverFrom === undefined);
+  const grouped = new Map<string, { goal: Goal; blocks: ScheduledBlock[] }>();
+  for (const block of blocks) {
+    const goalId = block.goalId;
+    const goal = goals.find((g) => g.id === goalId);
+    if (!goal) continue;
+    if (!grouped.has(goalId)) grouped.set(goalId, { goal, blocks: [] });
+    grouped.get(goalId)!.blocks.push(block);
+  }
+
+  // Summary stats
+  const totalPlanned = todayPlan?.totalPlannedHours ?? 0;
+  const totalCompleted = blocks.reduce((s, b) => s + b.completedHours, 0);
+  const totalRemaining = Math.max(0, totalPlanned - totalCompleted);
+  const progressPct = totalPlanned > 0 ? Math.round((totalCompleted / totalPlanned) * 100) : 0;
+  const allDone = blocks.length > 0 && blocks.every((b) => b.status === 'done');
+
+  const hasBlocks = blocks.length > 0;
+
+  // Suppress unused variable warning
+  void visibleBlocks;
+
+  // ── End My Day ──────────────────────────────────────────────────────────
+
+  const handleEndDay = async () => {
+    const confirmed = window.confirm('End your day? Unfinished tasks will roll over to tomorrow.');
+    if (!confirmed) return;
+
+    setEndingDay(true);
+    try {
+      const { rolledOverHours, replanNote } = await runEndOfDay(today);
+      const msg =
+        rolledOverHours > 0
+          ? `${rolledOverHours.toFixed(1)} hrs rolled over to tomorrow. Tomorrow's plan has been updated.${replanNote ? ' ' + replanNote : ''}`
+          : 'Great day! No tasks to roll over.';
+      setRolloverMsg(msg);
+    } finally {
+      setEndingDay(false);
+    }
   };
 
   return (
@@ -76,14 +266,27 @@ export default function DailyBoardPage() {
         </p>
       </div>
 
-      {/* Empty state */}
-      {totalCount === 0 && (
+      {/* Rollover notification */}
+      {rolloverMsg && (
         <div
           style={{
-            textAlign: 'center',
-            padding: '4rem 1rem',
+            padding: '0.75rem 1rem',
+            backgroundColor: 'rgba(245,166,35,0.1)',
+            border: '1px solid var(--amber)',
+            borderRadius: 4,
+            marginBottom: '1.5rem',
           }}
+          className="fade-in"
         >
+          <p style={{ color: 'var(--amber)', fontFamily: '"Syne", sans-serif', fontSize: '0.9rem', margin: 0 }}>
+            {rolloverMsg}
+          </p>
+        </div>
+      )}
+
+      {/* Empty state */}
+      {!hasBlocks && (
+        <div style={{ textAlign: 'center', padding: '4rem 1rem' }}>
           <p
             style={{
               fontFamily: '"Bebas Neue", cursive',
@@ -93,7 +296,7 @@ export default function DailyBoardPage() {
               marginBottom: '0.5rem',
             }}
           >
-            No tasks for today.
+            No tasks scheduled for today.
           </p>
           <p style={{ color: 'var(--muted)', fontSize: '0.85rem', fontFamily: '"Syne", sans-serif' }}>
             Add some goals to get your daily plan.
@@ -101,9 +304,9 @@ export default function DailyBoardPage() {
         </div>
       )}
 
-      {totalCount > 0 && (
+      {hasBlocks && (
         <>
-          {/* Progress summary */}
+          {/* ── Daily summary bar ── */}
           <div
             style={{
               backgroundColor: 'var(--bg2)',
@@ -113,16 +316,16 @@ export default function DailyBoardPage() {
               marginBottom: '1.5rem',
             }}
           >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem', flexWrap: 'wrap', gap: '0.5rem' }}>
               <span
                 style={{
                   fontFamily: '"Bebas Neue", cursive',
-                  fontSize: '1.1rem',
+                  fontSize: '1rem',
                   letterSpacing: '0.06em',
                   color: 'var(--text)',
                 }}
               >
-                {completedCount} of {totalCount} tasks done today
+                Today: {totalPlanned.toFixed(1)} hrs planned · {totalCompleted.toFixed(1)} hrs completed · {totalRemaining.toFixed(1)} hrs remaining
               </span>
               <span
                 style={{
@@ -131,13 +334,13 @@ export default function DailyBoardPage() {
                   color: 'var(--amber)',
                 }}
               >
-                {percentage}%
+                {progressPct}%
               </span>
             </div>
-            <ProgressBar value={percentage} height={6} />
+            <ProgressBar value={progressPct} height={6} />
           </div>
 
-          {/* All done banner */}
+          {/* ── All done banner ── */}
           {allDone && (
             <div
               style={{
@@ -167,13 +370,33 @@ export default function DailyBoardPage() {
             </div>
           )}
 
-          {/* Task list grouped by goal */}
-          {Object.values(grouped).map((groupTasks) => {
-            const goal = groupTasks[0].goal;
+          {/* ── Goal sections ── */}
+          {[...grouped.values()].map(({ goal, blocks: goalBlocks }) => {
             const accentColor = priorityColor(goal.priority);
 
             return (
-              <div key={goal.id} style={{ marginBottom: '1.5rem' }}>
+              <div key={goal.id} style={{ marginBottom: '1.75rem' }}>
+                {/* Deadline-at-risk warning */}
+                {goal.scheduleWarning === 'deadline_at_risk' && (
+                  <div
+                    style={{
+                      padding: '0.6rem 0.9rem',
+                      backgroundColor: 'rgba(245,166,35,0.08)',
+                      border: '1px solid var(--amber)',
+                      borderRadius: 3,
+                      marginBottom: '0.5rem',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.5rem',
+                    }}
+                  >
+                    <span style={{ fontSize: '0.85rem' }}>⚠</span>
+                    <span style={{ color: 'var(--amber)', fontFamily: '"Syne", sans-serif', fontSize: '0.8rem' }}>
+                      At current pace, this goal may miss its deadline. Consider reducing scope or extending deadline.
+                    </span>
+                  </div>
+                )}
+
                 {/* Goal section header */}
                 <div
                   style={{
@@ -207,18 +430,38 @@ export default function DailyBoardPage() {
                   </span>
                 </div>
 
-                {/* Tasks for this goal */}
-                {groupTasks.map((task) => (
-                  <SubGoalItem
-                    key={task.subGoal.id}
-                    subGoal={task.subGoal}
-                    onToggle={() => handleToggle(goal.id, task.subGoal.id)}
-                    showDescription
+                {/* Blocks for this goal */}
+                {goalBlocks.map((block) => (
+                  <BlockRow
+                    key={block.id}
+                    block={block}
+                    subGoalTitle={subGoalTitles.get(block.subGoalId) ?? block.subGoalId}
+                    date={today}
                   />
                 ))}
               </div>
             );
           })}
+
+          {/* ── End My Day button ── */}
+          {!rolloverMsg && (
+            <div style={{ marginTop: '2rem', display: 'flex', justifyContent: 'flex-end' }}>
+              <button
+                className="btn-secondary"
+                onClick={handleEndDay}
+                disabled={endingDay}
+                style={{
+                  padding: '0.7rem 1.5rem',
+                  fontFamily: '"Bebas Neue", cursive',
+                  letterSpacing: '0.06em',
+                  fontSize: '1rem',
+                  opacity: endingDay ? 0.7 : 1,
+                }}
+              >
+                {endingDay ? 'Wrapping up your day...' : 'End My Day →'}
+              </button>
+            </div>
+          )}
         </>
       )}
     </div>
